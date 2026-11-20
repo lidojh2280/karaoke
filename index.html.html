@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Karaoke</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#16131f;--panel:#221d31;--line:#3a3252;--text:#f3eefc;--dim:#a79fbd;--acc:#ff4f9a;--ok:#4cd697}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 "Segoe UI",system-ui,sans-serif}
+button,input{font:inherit}
+button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:600}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--text);padding:6px 10px}
+button:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:2px}
+input{background:#120f1a;border:1px solid var(--line);color:var(--text);border-radius:6px;padding:9px 12px;width:100%}
+header{display:flex;gap:16px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--line)}
+header h1{font-size:22px;margin:0;flex:1}
+#dot{width:12px;height:12px;border-radius:50%;background:#e5484d;display:inline-block;margin-right:6px}
+#dot.on{background:var(--ok)}
+main{display:grid;grid-template-columns:1.2fr 1fr;gap:20px;padding:20px;max-width:1300px;margin:auto}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border-radius:10px;padding:16px}
+h2{font-size:18px;margin:0 0 12px}
+.row{display:flex;gap:8px;margin-bottom:10px}
+.res{display:flex;gap:12px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.res img{width:120px;height:68px;object-fit:cover;border-radius:4px;flex:none}
+.res .t{flex:1;min-width:0}.res .t b{display:block;font-weight:600}.res .t span{color:var(--dim);font-size:14px}
+.now{border:1px solid var(--acc);border-radius:8px;padding:10px 12px;margin-bottom:12px}
+.q{display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.q .t{flex:1;min-width:0}.q .t span{color:var(--dim);font-size:14px;display:block}
+.dim{color:var(--dim)}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#000;border:1px solid var(--acc);padding:10px 16px;border-radius:8px;display:none}
+/* beamer */
+body.display{background:#000;overflow:hidden}
+#player,#player iframe{position:fixed;inset:0;width:100%;height:100%;border:0}
+body.idle #player{visibility:hidden}
+#next{position:fixed;left:14px;top:10px;font-size:15px;color:#fff;opacity:.75;text-shadow:0 0 4px #000;z-index:5;max-width:60%}
+body.idle #next{inset:0;left:0;top:0;max-width:none;display:flex;align-items:center;justify-content:center;text-align:center;font-size:clamp(28px,4vw,64px);opacity:1;padding:40px}
+#err{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:6;color:#ff8a8a;font-size:15px;text-align:center}
+#start{position:fixed;inset:0;z-index:9;background:#16131f;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:32px;cursor:pointer;text-align:center}
+#start small{font-size:18px;color:#a79fbd;margin-top:10px}
+</style>
+</head>
+<body>
+<script>
+const ch = new BroadcastChannel('karaoke');
+const params = new URLSearchParams(location.search);
+const h = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const label = s => s ? s.title + (s.singer ? ' \u2014 gezongen door ' + s.singer : '') : '';
+
+if (params.has('display')) initDisplay(); else initControl();
+
+/* ---------- Beamerscherm ---------- */
+function initDisplay() {
+  document.title = 'Karaoke \u2013 beamerscherm';
+  document.body.className = 'display idle';
+  document.body.innerHTML = '<div id="player"></div><div id="next"></div><div id="err"></div><div id="start">Klik hier om te starten<small>Sleep dit venster eerst naar de beamer</small></div>';
+  let player, ready = false, pending = null;
+  const s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(s);
+  let lastId = null, retried = false;
+  function makePlayer(host, id) {
+    ready = false; pending = id;
+    player = new YT.Player('player', {
+      host, width: '100%', height: '100%',
+      playerVars: { origin: location.origin, widget_referrer: location.href, autoplay: 1, controls: 0, rel: 0, playsinline: 1, disablekb: 1, iv_load_policy: 3 },
+      events: {
+        onReady: () => { ready = true; if (pending) { player.loadVideoById(pending); pending = null; } },
+        onStateChange: e => { if (e.data === 0) ch.postMessage({ type: 'ended' }); },
+        onError: e => {
+          if (e.data === 153 && !retried && lastId) {
+            retried = true;
+            player.destroy();
+            const d = document.createElement('div'); d.id = 'player'; document.body.prepend(d);
+            makePlayer('https://www.youtube-nocookie.com', lastId);
+            return;
+          }
+          document.getElementById('err').textContent = 'YouTube-fout ' + e.data;
+          ch.postMessage({ type: 'ended', error: e.data });
+        }
+      }
+    });
+  }
+  window.onYouTubeIframeAPIReady = () => makePlayer(undefined, null);
+  document.getElementById('start').onclick = () => {
+    document.documentElement.requestFullscreen?.().catch(() => {});
+    document.getElementById('start').remove();
+  };
+  ch.onmessage = e => {
+    const m = e.data;
+    if (m.type === 'play') {
+      document.getElementById('err').textContent = '';
+      document.body.classList.remove('idle');
+      lastId = m.id; if (ready) player.loadVideoById(m.id); else pending = m.id;
+    } else if (m.type === 'stop') {
+      if (ready) player.stopVideo();
+      pending = null;
+      document.body.classList.add('idle');
+    } else if (m.type === 'info') {
+      const idle = document.body.classList.contains('idle');
+      document.getElementById('next').textContent = m.next ? (idle ? 'Volgende: ' : 'Volgende: ') + label(m.next) : (idle ? 'Karaoke!' : '');
+    }
+  };
+  ch.postMessage({ type: 'hello' });
+  setInterval(() => ch.postMessage({ type: 'alive' }), 2000);
+}
+
+/* ---------- Bedieningsvenster ---------- */
+function initControl() {
+  let S = { queue: [], current: null };
+  try { S = JSON.parse(localStorage.getItem('kq')) || S; } catch (e) {}
+  if (S.current) { S.queue.unshift(S.current); S.current = null; }
+  let lastAlive = 0, timer = null;
+
+  document.body.innerHTML = `
+  <header><h1>Karaoke wachtrij</h1>
+    <span><i id="dot"></i><span id="stat">Beamerscherm niet verbonden</span></span>
+    <button id="open">Open beamerscherm</button>
+    <button class="ghost" id="keybtn">API-sleutel</button></header>
+  <main>
+    <section><h2>Zoek een nummer</h2>
+      <div class="row"><input id="q" placeholder="Zoek op titel of plak een YouTube-link" autofocus>
+      <button id="go">Zoek</button></div>
+      <div class="row"><input id="singer" placeholder="Naam zanger (optioneel)"></div>
+      <div id="res" class="dim">Zoekresultaten verschijnen hier.</div></section>
+    <section><h2>Wachtrij</h2><div id="queue"></div></section>
+  </main><div id="toast"></div>`;
+  const $ = id => document.getElementById(id);
+
+  const save = () => localStorage.setItem('kq', JSON.stringify(S));
+  const toast = t => { const el = $('toast'); el.textContent = t; el.style.display = 'block'; clearTimeout(el._t); el._t = setTimeout(() => el.style.display = 'none', 4000); };
+  const sendInfo = () => ch.postMessage({ type: 'info', now: S.current, next: S.queue[0] || null });
+  const update = () => { save(); render(); sendInfo(); };
+
+  function next() {
+    clearTimeout(timer);
+    if (S.queue.length) { S.current = S.queue.shift(); ch.postMessage({ type: 'play', id: S.current.id }); }
+    else { S.current = null; ch.postMessage({ type: 'stop' }); }
+    update();
+  }
+
+  function render() {
+    let html = '';
+    if (S.current) html += `<div class="now"><span class="dim">Nu bezig</span><br><b>${h(S.current.title)}</b>${S.current.singer ? '<br><span class="dim">' + h(S.current.singer) + '</span>' : ''}<div class="row" style="margin:8px 0 0"><button id="skip">Overslaan</button></div></div>`;
+    else if (S.queue.length) html += '<div class="row"><button id="startnext">Start volgende</button></div>';
+    if (!S.queue.length) html += '<p class="dim">De wachtrij is leeg.</p>';
+    S.queue.forEach((s, i) => {
+      html += `<div class="q"><div class="t"><b>${h(s.title)}</b><span>${h(s.singer || '')}</span></div>
+      <button class="ghost" data-a="up" data-i="${i}" title="Naar boven">\u25B2</button>
+      <button class="ghost" data-a="down" data-i="${i}" title="Naar beneden">\u25BC</button>
+      <button class="ghost" data-a="del" data-i="${i}" title="Verwijderen">\u2715</button></div>`;
+    });
+    $('queue').innerHTML = html;
+    $('skip') && ($('skip').onclick = next);
+    $('startnext') && ($('startnext').onclick = next);
+  }
+
+  $('queue').onclick = e => {
+    const b = e.target.closest('button[data-a]'); if (!b) return;
+    const i = +b.dataset.i, a = b.dataset.a, q = S.queue;
+    if (a === 'del') q.splice(i, 1);
+    if (a === 'up' && i > 0) [q[i - 1], q[i]] = [q[i], q[i - 1]];
+    if (a === 'down' && i < q.length - 1) [q[i + 1], q[i]] = [q[i], q[i + 1]];
+    update();
+  };
+
+  function add(song) {
+    song.singer = $('singer').value.trim();
+    S.queue.push(song);
+    $('singer').value = '';
+    update();
+    toast('Toegevoegd: ' + song.title);
+  }
+
+  async function search() {
+    const q = $('q').value.trim(); if (!q) return;
+    const m = q.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/);
+    if (m) {
+      let title = 'YouTube-video ' + m[1];
+      try { const r = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + m[1])); title = (await r.json()).title || title; } catch (e) {}
+      add({ id: m[1], title }); $('q').value = ''; return;
+    }
+    const key = localStorage.getItem('ykey');
+    if (!key) { askKey(); return; }
+    $('res').textContent = 'Zoeken\u2026';
+    try {
+      const r = await fetch('https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=12&q=' + encodeURIComponent(q) + '&key=' + encodeURIComponent(key));
+      const d = await r.json();
+      if (d.error) throw new Error(d.error.message);
+      const dec = s => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
+      window._r = d.items.map(it => ({ id: it.id.videoId, title: dec(it.snippet.title), ch: dec(it.snippet.channelTitle), img: it.snippet.thumbnails.medium.url }));
+      $('res').innerHTML = window._r.length ? window._r.map((v, i) => `<div class="res"><img src="${h(v.img)}" alt=""><div class="t"><b>${h(v.title)}</b><span>${h(v.ch)}</span></div><button data-i="${i}">Toevoegen</button></div>`).join('') : 'Geen resultaten.';
+    } catch (e) { $('res').textContent = 'Zoeken mislukt: ' + e.message; }
+  }
+  $('res').onclick = e => { const b = e.target.closest('button[data-i]'); if (b) { const v = window._r[+b.dataset.i]; add({ id: v.id, title: v.title }); } };
+  $('go').onclick = search;
+  $('q').onkeydown = e => { if (e.key === 'Enter') search(); };
+
+  function askKey() {
+    const k = prompt('Plak hier je YouTube API-sleutel:', localStorage.getItem('ykey') || '');
+    if (k !== null) { localStorage.setItem('ykey', k.trim()); toast('API-sleutel opgeslagen'); }
+  }
+  $('keybtn').onclick = askKey;
+  $('open').onclick = () => window.open(location.pathname + '?display=1', 'karaoke_display', 'width=960,height=540');
+
+  ch.onmessage = e => {
+    const m = e.data;
+    if (m.type === 'hello') { lastAlive = Date.now(); sendInfo(); }
+    else if (m.type === 'alive') lastAlive = Date.now();
+    else if (m.type === 'ended') {
+      if (m.error) toast('Afspelen mislukt, YouTube-foutcode ' + m.error + ' (101/150 = uploader blokkeert embedden, 153 = pagina niet via localhost geopend). Volgende wordt gestart.');
+      S.current = null; ch.postMessage({ type: 'stop' }); update();
+      clearTimeout(timer);
+      if (S.queue.length) timer = setTimeout(() => { if (!S.current) next(); }, 6000);
+    }
+  };
+  setInterval(() => {
+    const on = Date.now() - lastAlive < 5000;
+    $('dot').className = on ? 'on' : '';
+    $('stat').textContent = on ? 'Beamerscherm verbonden' : 'Beamerscherm niet verbonden';
+  }, 1000);
+
+  render();
+  if (location.protocol === 'file:') $('res').innerHTML = '<b style="color:#ff8a8a">Let op: je opende het bestand rechtstreeks. Sluit dit tabblad en start via start-karaoke.bat (adres moet localhost:8080 zijn), anders weigert YouTube de video.</b>';
+  else if (!localStorage.getItem('ykey')) $('res').textContent = 'Klik rechtsboven op "API-sleutel" om je YouTube-sleutel in te vullen, of plak een YouTube-link.';
+}
+</script>
+</body>
+</html>
